@@ -1,0 +1,98 @@
+name: Train, test and package
+
+on:
+  push:
+    branches: [main]
+    paths-ignore: ["**.md"]
+  pull_request:
+  workflow_dispatch:
+  schedule:
+    - cron: "30 20 * * 0"   # weekly retrain, Monday 02:00 IST
+
+env:
+  MLFLOW_TRACKING_URI: sqlite:///mlflow.db
+  PYTHONPATH: src
+
+jobs:
+  train-and-test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+      - run: pip install -r requirements-train.txt
+      - name: Unit and API tests
+        run: pytest -q
+      - name: Generate data
+        run: python data/generate_data.py --rows 20000
+      - name: Train with quality gate (ROC AUC >= 0.75)
+        run: python -m churn.train --model gbm --min-auc 0.75
+      - name: Upload model artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: model-${{ github.sha }}
+          path: artifacts/
+      - name: Upload MLflow tracking DB
+        uses: actions/upload-artifact@v4
+        with:
+          name: mlflow-${{ github.sha }}
+          path: mlflow.db
+
+  build-image:
+    needs: train-and-test
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          name: model-${{ github.sha }}
+          path: artifacts/
+      - name: Build serving image
+        run: docker build -t churn-api:${{ github.sha }} .
+      - name: Smoke test the container
+        run: |
+          docker run -d --name api -p 8000:8000 churn-api:${{ github.sha }}
+          for i in $(seq 1 20); do curl -sf localhost:8000/readyz && break; sleep 2; done
+          curl -sf -X POST localhost:8000/predict -H 'Content-Type: application/json' \
+            -d '{"tenure_months":3,"monthly_charges":110.5,"total_charges":331.5,"contract":"month-to-month","internet_service":"fiber","payment_method":"cash","support_calls":4,"senior_citizen":0}'
+      - name: Trivy scan
+        uses: aquasecurity/trivy-action@0.28.0
+        with:
+          image-ref: churn-api:${{ github.sha }}
+          severity: CRITICAL
+          ignore-unfixed: true
+          exit-code: "1"
+
+  deploy:
+    needs: build-image
+    if: github.ref == 'refs/heads/main' && vars.AWS_ENABLED == 'true'
+    runs-on: ubuntu-latest
+    environment: dev
+    permissions:
+      id-token: write
+      contents: read
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          name: model-${{ github.sha }}
+          path: artifacts/
+      - uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ secrets.AWS_DEPLOY_ROLE_ARN }}
+          aws-region: ap-south-1
+      - uses: aws-actions/amazon-ecr-login@v2
+        id: ecr
+      - name: Push image to ECR
+        run: |
+          IMAGE=${{ steps.ecr.outputs.registry }}/dev/churn-api:${GITHUB_SHA::7}
+          docker build -t $IMAGE .
+          docker push $IMAGE
+      - name: Helm upgrade on EKS
+        run: |
+          aws eks update-kubeconfig --name shop-dev-eks --region ap-south-1
+          helm upgrade --install churn-api helm/churn-api -n ml --create-namespace \
+            --set image.repository=${{ steps.ecr.outputs.registry }}/dev/churn-api \
+            --set image.tag=${GITHUB_SHA::7} --wait --timeout 5m
