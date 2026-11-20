@@ -1,0 +1,24 @@
+apiVersion: monitoring.coreos.com/v1
+kind: PrometheusRule
+metadata:
+  name: churn-api-alerts
+  labels:
+    release: kube-prometheus-stack
+spec:
+  groups:
+    - name: churn-api
+      rules:
+        - alert: ChurnFeatureDrift
+          expr: churn_feature_psi > 0.25
+          for: 30m
+          labels:
+            severity: warning
+          annotations:
+            summary: monthly_charges has drifted from training data (PSI above 0.25). Retrain the model.
+        - alert: ChurnApiSlow
+          expr: histogram_quantile(0.95, sum(rate(churn_prediction_latency_seconds_bucket[5m])) by (le)) > 0.2
+          for: 10m
+          labels:
+            severity: warning
+          annotations:
+            summary: p95 prediction latency is above 200 ms
