@@ -17,8 +17,8 @@ jobs:
   train-and-test:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-python@v5
+      - uses: actions/checkout@v7
+      - uses: actions/setup-python@v7
         with:
           python-version: "3.12"
           cache: pip
@@ -30,12 +30,12 @@ jobs:
       - name: Train with quality gate (ROC AUC >= 0.75)
         run: python -m churn.train --model gbm --min-auc 0.75
       - name: Upload model artifacts
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: model-${{ github.sha }}
           path: artifacts/
       - name: Upload MLflow tracking DB
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: mlflow-${{ github.sha }}
           path: mlflow.db
@@ -44,8 +44,8 @@ jobs:
     needs: train-and-test
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/download-artifact@v4
+      - uses: actions/checkout@v7
+      - uses: actions/download-artifact@v8
         with:
           name: model-${{ github.sha }}
           path: artifacts/
@@ -58,7 +58,7 @@ jobs:
           curl -sf -X POST localhost:8000/predict -H 'Content-Type: application/json' \
             -d '{"tenure_months":3,"monthly_charges":110.5,"total_charges":331.5,"contract":"month-to-month","internet_service":"fiber","payment_method":"cash","support_calls":4,"senior_citizen":0}'
       - name: Trivy scan
-        uses: aquasecurity/trivy-action@0.28.0
+        uses: aquasecurity/trivy-action@v0.36.0
         with:
           image-ref: churn-api:${{ github.sha }}
           severity: CRITICAL
@@ -74,12 +74,12 @@ jobs:
       id-token: write
       contents: read
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/download-artifact@v4
+      - uses: actions/checkout@v7
+      - uses: actions/download-artifact@v8
         with:
           name: model-${{ github.sha }}
           path: artifacts/
-      - uses: aws-actions/configure-aws-credentials@v4
+      - uses: aws-actions/configure-aws-credentials@v6
         with:
           role-to-assume: ${{ secrets.AWS_DEPLOY_ROLE_ARN }}
           aws-region: ap-south-1
